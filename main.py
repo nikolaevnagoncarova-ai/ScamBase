@@ -18,7 +18,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton, BotCommand,
-    LinkPreviewOptions
+    LinkPreviewOptions, URLInputFile
 )
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
@@ -333,17 +333,20 @@ def admin_manage_keyboard():
         ]
     )
 
+# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ БАННЕРОВ С ИСПОЛЬЗОВАНИЕМ URLInputFile ---
 async def send_banner_response(message: types.Message, banner_key: str, caption_text: str, reply_markup=None):
     photo_url = BANNERS.get(banner_key)
     link_options = LinkPreviewOptions(is_disabled=False, prefer_large_media=True, show_above_text=True)
+    
     if photo_url and photo_url.startswith("http"):
         try:
-            await message.answer_photo(photo=photo_url, caption=caption_text, reply_markup=reply_markup)
+            photo_file = URLInputFile(photo_url)
+            await message.answer_photo(photo=photo_file, caption=caption_text, reply_markup=reply_markup)
+            return
         except Exception as e:
-            logging.error(f"Ошибка отправки фото {banner_key}: {e}")
-            await message.answer(text=caption_text, reply_markup=reply_markup, link_preview_options=link_options)
-    else:
-        await message.answer(text=caption_text, reply_markup=reply_markup, link_preview_options=link_options)
+            logging.error(f"Ошибка отправки баннера {banner_key}: {e}")
+            
+    await message.answer(text=caption_text, reply_markup=reply_markup, link_preview_options=link_options)
 
 
 # ==========================================
@@ -900,12 +903,13 @@ async def auto_chat_shield(message: types.Message):
         photo_url = BANNERS.get("scam")
         if photo_url and photo_url.startswith("http"):
             try:
-                await message.reply_photo(photo=photo_url, caption=warn_text)
+                photo_file = URLInputFile(photo_url)
+                await message.reply_photo(photo=photo_file, caption=warn_text)
+                return
             except Exception as e:
                 logging.error(f"Ошибка отправки фото скамера: {e}")
-                await message.reply(warn_text)
-        else:
-            await message.reply(warn_text)
+                
+        await message.reply(warn_text)
 
 # ==========================================
 # 7. ТОЧКА ВХОДА
