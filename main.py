@@ -16,7 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, 
-    InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, BotCommand
+    InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 )
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
@@ -33,13 +33,12 @@ ENV_ADMIN_IDS = [int(admin_id.strip()) for admin_id in raw_admins.split(",") if 
 
 DB_PATH = os.getenv("DB_PATH", "antiscam.db")
 
-# Абсолютные пути к картинкам
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Прямые ссылки на баннеры из Postimages
 BANNERS = {
-    "welcome": os.path.join(BASE_DIR, "banners", "welcome.png"),
-    "unknown": os.path.join(BASE_DIR, "banners", "unknown.png"),
-    "trusted": os.path.join(BASE_DIR, "banners", "trusted.png"),
-    "scam": os.path.join(BASE_DIR, "banners", "scam.png")
+    "welcome": "https://i.postimg.cc/1XDvqQFf/Bez-nazvania134-20260924150439.png",
+    "unknown": "https://i.postimg.cc/Z55LT3wP/Bez-nazvania132-20260924143850.png",
+    "trusted": "https://i.postimg.cc/CMb7JwZR/Bez-nazvania131-20260924142417.png",
+    "scam":    "https://i.postimg.cc/HLJ4MmDV/Bez-nazvania130-20260924141235.png"
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -75,7 +74,7 @@ async def set_bot_commands(bot_instance: Bot):
     """Установка меню подсказок для команд (при вводе /)"""
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота / Главное меню"),
-        BotCommand(command="check", description="🔎 Проверить пользователя / контрагента"),
+        BotCommand(command="check", description="🔎 Проверить пользователя / реквизиты"),
         BotCommand(command="guarantors", description="🛡 Реестр проверенных гарантов"),
         BotCommand(command="admin", description="👑 Панель администратора")
     ]
@@ -295,6 +294,9 @@ class AdminState(StatesGroup):
 class CheckState(StatesGroup):
     input_entity = State()
 
+class RequisitesState(StatesGroup):
+    input_requisite = State()
+
 def main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -326,10 +328,13 @@ def admin_manage_keyboard():
     )
 
 async def send_banner_response(message: types.Message, banner_key: str, caption_text: str, reply_markup=None):
-    file_path = BANNERS.get(banner_key)
-    if file_path and os.path.exists(file_path):
-        photo = FSInputFile(file_path)
-        await message.answer_photo(photo=photo, caption=caption_text, reply_markup=reply_markup)
+    photo_url = BANNERS.get(banner_key)
+    if photo_url and photo_url.startswith("http"):
+        try:
+            await message.answer_photo(photo=photo_url, caption=caption_text, reply_markup=reply_markup)
+        except Exception as e:
+            logging.error(f"Ошибка отправки фото {banner_key}: {e}")
+            await message.answer(text=caption_text, reply_markup=reply_markup)
     else:
         await message.answer(text=caption_text, reply_markup=reply_markup)
 
@@ -378,17 +383,27 @@ async def cmd_admin(message: types.Message, state: FSMContext):
     )
     await message.answer(text, reply_markup=admin_keyboard())
 
-# --- Проверка контрагента ---
+# --- Единая функция проверки объектов (пользователей, карт, кошельков, ссылок) ---
 async def process_user_check(message: types.Message, query: str):
     clean_query = html.escape(query.strip())
-    status, data = await check_entity(query)
     
+    # Авто-очистка пробелов для номеров банковских карт
+    search_query = query.strip()
+    if search_query.replace(" ", "").isdigit():
+        search_query = search_query.replace(" ", "")
+
+    status, data = await check_entity(search_query)
+    
+    # Если по нормализованному запросу не нашли, проверяем исходный вариант
+    if status == "unknown" and search_query != query.strip():
+        status, data = await check_entity(query.strip())
+
     if status == "scammer":
         reason = html.escape(data['reason'])
         proof = html.escape(data['proof'])
         user_link = format_profile_link(clean_query, clean_query)
         text = (
-            f"<b>FraudX Base | ВНИМАНИЕ! ПОЛЬЗОВАТЕЛЬ СКАМЕР</b>\n\n"
+            f"<b>FraudX Base | ВНИМАНИЕ! ОБЪЕКТ/РЕКВИЗИТ В ЧЕРНОМ СПИСКЕ</b>\n\n"
             f"<b>Идентификатор:</b> {user_link}\n"
             f"<b>Причина занесения:</b> <i>{reason}</i>\n"
             f"<b>Доказательства:</b> {proof}\n\n"
@@ -421,19 +436,20 @@ async def process_user_check(message: types.Message, query: str):
             f"<b>FraudX Base | НАДЕЖНЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\n"
             f"<b>Идентификатор:</b> {user_link}\n"
             f"<b>Примечание:</b> <i>{note}</i>\n\n"
-            f"<blockquote>Пользователь прошёл первичную верификацию и не имеет зафиксированных жалоб в системе FraudX Base.</blockquote>"
+            f"<blockquote>Объект прошёл первичную верификацию и не имеет зафиксированных жалоб в системе FraudX Base.</blockquote>"
         )
         await send_banner_response(message, "trusted", text)
 
     else:
         user_link = format_profile_link(clean_query, clean_query)
         text = (
-            f"<b>FraudX Base | НЕИЗВЕСТНЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\n"
+            f"<b>FraudX Base | НЕИЗВЕСТНЫЙ ОБЪЕКТ</b>\n\n"
             f"<b>Идентификатор:</b> {user_link}\n\n"
-            f"<blockquote>Данный объект отсутствует в базе данных FraudX Base. Будьте внимательны при проведении финансовых операций и используйте официальных гарантов.</blockquote>"
+            f"<blockquote>Данный объект (пользователь/карта/кошелек/ссылка) отсутствует в базе данных FraudX Base. Будьте внимательны при проведении финансовых операций и используйте официальных гарантов.</blockquote>"
         )
         await send_banner_response(message, "unknown", text)
 
+# --- Проверка пользователя ---
 @dp.message(F.text == "🔎 Проверить пользователя")
 async def btn_check_user(message: types.Message, state: FSMContext):
     await state.clear()
@@ -513,15 +529,21 @@ async def check_requisites_info(message: types.Message, state: FSMContext):
     if message.from_user:
         await register_user(message.from_user)
         
+    await state.set_state(RequisitesState.input_requisite)
     text = (
         "<b>FraudX Base | АНТИФИШИНГ И ПРОВЕРКА РЕКВИЗИТОВ</b>\n\n"
-        "<blockquote>Отправьте в этот чат номер карты, крипто-кошелек или ссылку для мгновенной сверки с черным списком.</blockquote>\n\n"
+        "<blockquote>Отправьте в ответ номер карты, крипто-кошелек или ссылку для мгновенной сверки с черным списком.</blockquote>\n\n"
         "<u>Поддерживаемые форматы:</u>\n"
         "• Банковские карты (16 цифр)\n"
         "• USDT / BTC / ETH кошельки\n"
         "• Домены и фишинг-ссылки"
     )
     await message.answer(text)
+
+@dp.message(RequisitesState.input_requisite)
+async def process_requisites_input(message: types.Message, state: FSMContext):
+    await state.clear()
+    await process_user_check(message, message.text)
 
 # --- Подача жалобы ---
 @dp.message(F.text == "📩 Подать жалобу")
@@ -572,6 +594,23 @@ async def complaint_proof(message: types.Message, state: FSMContext):
         "<blockquote>Ваша жалоба отправлена на рассмотрение модераторам FraudX Base. В случае подтверждения факта скама объект будет внесён в черную базу.</blockquote>"
     )
 
+# --- Авто-обработка любых текстовых сообщений в ЛС (быстрый поиск без нажатия кнопок) ---
+@dp.message(F.chat.type == "private", F.text)
+async def default_private_text_check(message: types.Message, state: FSMContext):
+    if message.from_user:
+        await register_user(message.from_user)
+        
+    menu_buttons = [
+        "🔎 Проверить пользователя", 
+        "🛡 Список гарантов", 
+        "📩 Подать жалобу", 
+        "🔗 Проверка реквизитов"
+    ]
+    if message.text in menu_buttons:
+        return
+
+    await process_user_check(message, message.text)
+
 
 # ==========================================
 # 6. ЛОГИКА АДМИНИСТРАТОРА
@@ -583,7 +622,7 @@ async def admin_add_scam_start(call: types.CallbackQuery, state: FSMContext):
     if not await is_admin(call.from_user.id):
         return
     await state.set_state(AdminState.add_scam_target)
-    await call.message.answer("<b>FraudX Base | ВНЕСЕНИЕ СКАМЕРА</b>\n\nВведите ID или Username нарушителя:")
+    await call.message.answer("<b>FraudX Base | ВНЕСЕНИЕ СКАМЕРА / ЧЕРНЫЙ СПИСОК</b>\n\nВведите ID, Username, номер карты или кошелек нарушителя:")
     await call.answer()
 
 @dp.message(AdminState.add_scam_target)
@@ -618,7 +657,7 @@ async def admin_add_trust_start(call: types.CallbackQuery, state: FSMContext):
     if not await is_admin(call.from_user.id):
         return
     await state.set_state(AdminState.add_trust_target)
-    await call.message.answer("<b>FraudX Base | НАДЕЖНЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\nВведите ID или Username:")
+    await call.message.answer("<b>FraudX Base | НАДЕЖНЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\nВведите ID, Username или реквизит:")
     await call.answer()
 
 @dp.message(AdminState.add_trust_target)
@@ -877,9 +916,13 @@ async def auto_chat_shield(message: types.Message):
             f"<b>Доказательства:</b> {proof}\n\n"
             f"<blockquote>Будьте осторожны! Данный участник находится в реестре мошенников FraudX Base.</blockquote>"
         )
-        file_path = BANNERS.get("scam")
-        if file_path and os.path.exists(file_path):
-            await message.reply_photo(photo=FSInputFile(file_path), caption=warn_text)
+        photo_url = BANNERS.get("scam")
+        if photo_url and photo_url.startswith("http"):
+            try:
+                await message.reply_photo(photo=photo_url, caption=warn_text)
+            except Exception as e:
+                logging.error(f"Ошибка отправки фото скамера: {e}")
+                await message.reply(warn_text)
         else:
             await message.reply(warn_text)
 
