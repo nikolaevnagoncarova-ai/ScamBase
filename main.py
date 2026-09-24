@@ -10,14 +10,15 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import State, StatesGroup, default_state
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, 
-    InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+    InlineKeyboardMarkup, InlineKeyboardButton, BotCommand,
+    LinkPreviewOptions
 )
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
@@ -59,7 +60,6 @@ def normalize_id(ident: str) -> str:
     ident = ident.strip()
     if ident.startswith("@"):
         return ident.lower()
-    # Удаляем пробелы и дефисы для номеров карт/кошельков
     clean_num = re.sub(r'[\s\-]+', '', ident)
     if clean_num.isdigit():
         return clean_num
@@ -83,7 +83,7 @@ async def set_bot_commands(bot_instance: Bot):
     """Установка меню подсказок для команд (при вводе /)"""
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота / Главное меню"),
-        BotCommand(command="check", description="🔎 Проверить пользователя / реквизиты"),
+        BotCommand(command="check", description="🔎 Проверить пользователя"),
         BotCommand(command="guarantors", description="🛡 Реестр проверенных гарантов"),
         BotCommand(command="admin", description="👑 Панель администратора")
     ]
@@ -303,14 +303,11 @@ class AdminState(StatesGroup):
 class CheckState(StatesGroup):
     input_entity = State()
 
-class RequisitesState(StatesGroup):
-    input_requisite = State()
-
 def main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🔎 Проверить пользователя"), KeyboardButton(text="🛡 Список гарантов")],
-            [KeyboardButton(text="📩 Подать жалобу"), KeyboardButton(text="🔗 Проверка реквизитов")]
+            [KeyboardButton(text="📩 Подать жалобу")]
         ],
         resize_keyboard=True
     )
@@ -338,14 +335,15 @@ def admin_manage_keyboard():
 
 async def send_banner_response(message: types.Message, banner_key: str, caption_text: str, reply_markup=None):
     photo_url = BANNERS.get(banner_key)
+    link_options = LinkPreviewOptions(is_disabled=False, prefer_large_media=True, show_above_text=True)
     if photo_url and photo_url.startswith("http"):
         try:
             await message.answer_photo(photo=photo_url, caption=caption_text, reply_markup=reply_markup)
         except Exception as e:
             logging.error(f"Ошибка отправки фото {banner_key}: {e}")
-            await message.answer(text=caption_text, reply_markup=reply_markup)
+            await message.answer(text=caption_text, reply_markup=reply_markup, link_preview_options=link_options)
     else:
-        await message.answer(text=caption_text, reply_markup=reply_markup)
+        await message.answer(text=caption_text, reply_markup=reply_markup, link_preview_options=link_options)
 
 
 # ==========================================
@@ -361,13 +359,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
         
     text = (
         "<b>FraudX Base | ЕДИНАЯ АНТИ-СКАМ БАЗА</b>\n\n"
-        "<blockquote>Автоматизированный сервис проверки контрагентов, поиска злоумышленников и реестр верифицированных гарантов.</blockquote>\n\n"
+        "<b>Автоматизированный сервис проверки контрагентов, поиска злоумышленников и реестр верифицированных гарантов.</b>\n\n"
         "<u>Доступные возможности:</u>\n"
         "• <b>Проверка пользователей</b> по ID или Username\n"
         "• <b>Авто-защита чатов</b> при отправке сообщений\n"
         "• <b>Реестр проверенных гарантов</b> с прямыми ссылками\n"
         "• <b>Подача официальных жалоб</b> с доказательствами\n\n"
-        "<i>Используйте нижнее меню FraudX Base для навигации.</i>"
+        "<b>Используйте нижнее меню FraudX Base для навигации.</b>"
     )
     await send_banner_response(message, "welcome", text, reply_markup=main_keyboard())
 
@@ -388,18 +386,17 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         return
     text = (
         "<b>FraudX Base | ПАНЕЛЬ УПРАВЛЕНИЯ АДМИНИСТРАТОРА</b>\n\n"
-        "<blockquote>Выберите необходимый раздел для модерации базы данных.</blockquote>"
+        "<b>Выберите необходимый раздел для модерации базы данных.</b>"
     )
     await message.answer(text, reply_markup=admin_keyboard())
 
-# --- Единая функция проверки объектов (пользователей, карт, кошельков, ссылок) ---
+# --- Единая функция проверки объектов ---
 async def process_user_check(message: types.Message, query: str):
     clean_query = html.escape(query.strip())
     search_query = normalize_id(query)
 
     status, data = await check_entity(search_query)
     
-    # Если по нормализованному запросу не нашли, проверяем исходный вариант
     if status == "unknown" and search_query != query.strip():
         status, data = await check_entity(query.strip())
 
@@ -408,11 +405,11 @@ async def process_user_check(message: types.Message, query: str):
         proof = html.escape(data['proof'])
         user_link = format_profile_link(clean_query, clean_query)
         text = (
-            f"<b>FraudX Base | ВНИМАНИЕ! ОБЪЕКТ/РЕКВИЗИТ В ЧЕРНОМ СПИСКЕ</b>\n\n"
+            f"<b>FraudX Base | ВНИМАНИЕ! ОБЪЕКТ В ЧЕРНОМ СПИСКЕ</b>\n\n"
             f"<b>Идентификатор:</b> {user_link}\n"
-            f"<b>Причина занесения:</b> <i>{reason}</i>\n"
+            f"<b>Причина занесения:</b> <b>{reason}</b>\n"
             f"<b>Доказательства:</b> {proof}\n\n"
-            f"<blockquote><u>Категорически не рекомендуем совершать любые сделки с данным объектом.</u></blockquote>"
+            f"<b>Категорически не рекомендуем совершать любые сделки с данным объектом.</b>"
         )
         await send_banner_response(message, "scam", text)
 
@@ -428,9 +425,9 @@ async def process_user_check(message: types.Message, query: str):
             f"<b>Имя/Проект:</b> <b>{g_name}</b>\n"
             f"<b>Контакт:</b> {format_profile_link(g_ident, g_ident)}\n"
             f"<b>Страховой депозит:</b> <u>{g_deposit}</u>\n"
-            f"<b>Описание:</b> <i>{g_desc}</i>\n"
+            f"<b>Описание:</b> <b>{g_desc}</b>\n"
             f"<b>Ссылка на профиль:</b> {g_link}\n\n"
-            f"<blockquote>Сделки с данным лицом подлежат стандартной защите сервиса FraudX Base.</blockquote>"
+            f"<b>Сделки с данным лицом подлежат стандартной защите сервиса FraudX Base.</b>"
         )
         await send_banner_response(message, "trusted", text)
 
@@ -440,8 +437,8 @@ async def process_user_check(message: types.Message, query: str):
         text = (
             f"<b>FraudX Base | НАДЕЖНЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\n"
             f"<b>Идентификатор:</b> {user_link}\n"
-            f"<b>Примечание:</b> <i>{note}</i>\n\n"
-            f"<blockquote>Объект прошёл первичную верификацию и не имеет зафиксированных жалоб в системе FraudX Base.</blockquote>"
+            f"<b>Примечание:</b> <b>{note}</b>\n\n"
+            f"<b>Объект прошёл первичную верификацию и не имеет зафиксированных жалоб в системе FraudX Base.</b>"
         )
         await send_banner_response(message, "trusted", text)
 
@@ -450,7 +447,7 @@ async def process_user_check(message: types.Message, query: str):
         text = (
             f"<b>FraudX Base | НЕИЗВЕСТНЫЙ ОБЪЕКТ</b>\n\n"
             f"<b>Идентификатор:</b> {user_link}\n\n"
-            f"<blockquote>Данный объект (пользователь/карта/кошелек/ссылка) отсутствует в базе данных FraudX Base. Будьте внимательны при проведении финансовых операций и используйте официальных гарантов.</blockquote>"
+            f"<b>Данный объект отсутствует в базе данных FraudX Base. Будьте внимательны при проведении финансовых операций и используйте официальных гарантов.</b>"
         )
         await send_banner_response(message, "unknown", text)
 
@@ -470,7 +467,7 @@ async def btn_check_user(message: types.Message, state: FSMContext):
     await state.set_state(CheckState.input_entity)
     await message.answer(
         "<b>FraudX Base | ПРОВЕРКА ПОЛЬЗОВАТЕЛЯ</b>\n\n"
-        "<blockquote>Введите <b>@username</b> или <b>ID пользователя</b> для поиска в базе данных.</blockquote>"
+        "<b>Введите @username или ID пользователя для поиска в базе данных.</b>"
     )
 
 @dp.message(Command("check"))
@@ -487,7 +484,7 @@ async def cmd_check_user(message: types.Message, state: FSMContext):
     await state.set_state(CheckState.input_entity)
     await message.answer(
         "<b>FraudX Base | ПРОВЕРКА ПОЛЬЗОВАТЕЛЯ</b>\n\n"
-        "<blockquote>Введите <b>@username</b> или <b>ID пользователя</b> для поиска в базе данных.</blockquote>"
+        "<b>Введите @username или ID пользователя для поиска в базе данных.</b>"
     )
 
 @dp.message(CheckState.input_entity)
@@ -505,7 +502,7 @@ async def show_guarantors(message: types.Message, state: FSMContext):
         
     guarantors = await get_guarantors()
     if not guarantors:
-        await message.answer("<b>FraudX Base | СПИСОК ГАРАНТОВ</b>\n\n<blockquote>На данный момент список проверенных гарантов пуст.</blockquote>")
+        await message.answer("<b>FraudX Base | СПИСОК ГАРАНТОВ</b>\n\n<b>На данный момент список проверенных гарантов пуст.</b>")
         return
 
     text = "<b>FraudX Base | РЕЕСТР НАДЕЖНЫХ ГАРАНТОВ</b>\n\n"
@@ -521,34 +518,13 @@ async def show_guarantors(message: types.Message, state: FSMContext):
         text += (
             f"<b>{idx}. {g_name}</b> ({contact_link})\n"
             f"• <b>Депозит:</b> <u>{g_deposit}</u>\n"
-            f"• <b>Информация:</b> <i>{g_desc}</i>\n"
+            f"• <b>Информация:</b> <b>{g_desc}</b>\n"
             f"• <b>Ссылка:</b> {profile_btn}\n\n"
         )
-    text += "<blockquote>Совершайте сделки исключительно через официальные контакты гарантов.</blockquote>"
-    await message.answer(text)
-
-# --- Проверка реквизитов ---
-@dp.message(F.text == "🔗 Проверка реквизитов")
-async def check_requisites_info(message: types.Message, state: FSMContext):
-    await state.clear()
-    if message.from_user:
-        await register_user(message.from_user)
-        
-    await state.set_state(RequisitesState.input_requisite)
-    text = (
-        "<b>FraudX Base | АНТИФИШИНГ И ПРОВЕРКА РЕКВИЗИТОВ</b>\n\n"
-        "<blockquote>Отправьте в ответ номер карты, крипто-кошелек или ссылку для мгновенной сверки с черным списком.</blockquote>\n\n"
-        "<u>Поддерживаемые форматы:</u>\n"
-        "• Банковские карты (16 цифр)\n"
-        "• USDT / BTC / ETH кошельки\n"
-        "• Домены и фишинг-ссылки"
-    )
-    await message.answer(text)
-
-@dp.message(RequisitesState.input_requisite)
-async def process_requisites_input(message: types.Message, state: FSMContext):
-    await state.clear()
-    await process_user_check(message, message.text)
+    text += "<b>Совершайте сделки исключительно через официальные контакты гарантов.</b>"
+    
+    link_options = LinkPreviewOptions(is_disabled=False, prefer_large_media=True, show_above_text=True)
+    await message.answer(text, link_preview_options=link_options)
 
 # --- Подача жалобы ---
 @dp.message(F.text == "📩 Подать жалобу")
@@ -560,7 +536,7 @@ async def start_complaint(message: types.Message, state: FSMContext):
     await state.set_state(ComplaintState.target)
     await message.answer(
         "<b>FraudX Base | ПОДАЧА ЖАЛОБЫ — ШАГ 1/3</b>\n\n"
-        "<blockquote>Укажите <b>@username</b> или <b>ID</b> нарушителя.</blockquote>"
+        "<b>Укажите @username или ID нарушителя.</b>"
     )
 
 @dp.message(ComplaintState.target)
@@ -569,7 +545,7 @@ async def complaint_target(message: types.Message, state: FSMContext):
     await state.set_state(ComplaintState.description)
     await message.answer(
         "<b>FraudX Base | ПОДАЧА ЖАЛОБЫ — ШАГ 2/3</b>\n\n"
-        "<blockquote>Подробно опишите ситуацию и суть мошенничества.</blockquote>"
+        "<b>Подробно опишите ситуацию и суть мошенничества.</b>"
     )
 
 @dp.message(ComplaintState.description)
@@ -578,7 +554,7 @@ async def complaint_desc(message: types.Message, state: FSMContext):
     await state.set_state(ComplaintState.proof)
     await message.answer(
         "<b>FraudX Base | ПОДАЧА ЖАЛОБЫ — ШАГ 3/3</b>\n\n"
-        "<blockquote>Предоставьте ссылки на доказательства (Telegraph, Imgur, скриншоты или переписку).</blockquote>"
+        "<b>Предоставьте ссылки на доказательства (Telegraph, Imgur, скриншоты или переписку).</b>"
     )
 
 @dp.message(ComplaintState.proof)
@@ -596,11 +572,11 @@ async def complaint_proof(message: types.Message, state: FSMContext):
     await message.answer(
         "<b>FraudX Base | ЖАЛОБА УСПЕШНО ЗАРЕГИСТРИРОВАНА</b>\n\n"
         f"<b>Номер заявки:</b> <code>#{complaint_id}</code>\n"
-        "<blockquote>Ваша жалоба отправлена на рассмотрение модераторам FraudX Base. В случае подтверждения факта скама объект будет внесён в черную базу.</blockquote>"
+        "<b>Ваша жалоба отправлена на рассмотрение модераторам FraudX Base. В случае подтверждения факта скама объект будет внесён в черную базу.</b>"
     )
 
-# --- Авто-обработка любых текстовых сообщений в ЛС ---
-@dp.message(F.chat.type == "private", F.text)
+# --- Авто-обработка любых текстовых сообщений в ЛС (С ЗАЩИТОЙ FSM) ---
+@dp.message(F.chat.type == "private", F.text, StateFilter(default_state))
 async def default_private_text_check(message: types.Message, state: FSMContext):
     if message.from_user:
         await register_user(message.from_user)
@@ -608,8 +584,7 @@ async def default_private_text_check(message: types.Message, state: FSMContext):
     menu_buttons = [
         "🔎 Проверить пользователя", 
         "🛡 Список гарантов", 
-        "📩 Подать жалобу", 
-        "🔗 Проверка реквизитов"
+        "📩 Подать жалобу"
     ]
     if message.text in menu_buttons:
         return
@@ -741,7 +716,7 @@ async def admin_view_complaints(call: types.CallbackQuery):
         f"<b>FraudX Base | ЖАЛОБА #{c['id']}</b>\n\n"
         f"• <b>Отправитель:</b> <code>{c['reporter_id']}</code>\n"
         f"• <b>Нарушитель:</b> <code>{html.escape(c['target'])}</code>\n"
-        f"• <b>Описание:</b> <i>{html.escape(c['description'])}</i>\n"
+        f"• <b>Описание:</b> <b>{html.escape(c['description'])}</b>\n"
         f"• <b>Доказательства:</b> {html.escape(c['proof'])}"
     )
     await call.message.answer(text, reply_markup=keyboard)
@@ -805,7 +780,7 @@ async def admin_broadcast_process(message: types.Message, state: FSMContext):
                 message_id=message.message_id
             )
             success += 1
-            await asyncio.sleep(0.04)  # Защита от лимитов Telegram (до 25-30 соб/сек)
+            await asyncio.sleep(0.04)
         except (TelegramForbiddenError, TelegramBadRequest):
             blocked += 1
         except Exception as e:
@@ -918,9 +893,9 @@ async def auto_chat_shield(message: types.Message):
         warn_text = (
             f"<b>FraudX Base | ОПАСНОСТЬ! В ЧАТЕ ОБНАРУЖЕН СКАМЕР!</b>\n\n"
             f"<b>Пользователь:</b> {message.from_user.mention_html()}\n"
-            f"<b>Причина ЧС:</b> <i>{reason}</i>\n"
+            f"<b>Причина ЧС:</b> <b>{reason}</b>\n"
             f"<b>Доказательства:</b> {proof}\n\n"
-            f"<blockquote>Будьте осторожны! Данный участник находится в реестре мошенников FraudX Base.</blockquote>"
+            f"<b>Будьте осторожны! Данный участник находится в реестре мошенников FraudX Base.</b>"
         )
         photo_url = BANNERS.get("scam")
         if photo_url and photo_url.startswith("http"):
