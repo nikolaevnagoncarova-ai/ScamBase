@@ -24,28 +24,24 @@ from aiogram.types import (
 # ==========================================
 load_dotenv()
 
-# Токен бота (можно задать через переменную окружения BOT_TOKEN или вставить прямо сюда)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
 
-# Список ID администраторов через запятую (например, "123456789,987654321")
-raw_admins = os.getenv("ADMIN_IDS", "ВАШ_TELEGRAM_ID")
+# Список ID администраторов (можно перечислить через запятую "1234567,9876543")
+raw_admins = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in raw_admins.split(",") if admin_id.strip().isdigit()]
 
-# Путь к файлу базы данных SQLite
 DB_PATH = os.getenv("DB_PATH", "antiscam.db")
 
-# Пути к изображениям баннеров
+# Настройка корректных абсолютных путей к картинкам
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BANNERS = {
-    "welcome": "banners/welcome.png",
-    "unknown": "banners/unknown.png",
-    "trusted": "banners/trusted.png",
-    "scam": "banners/scam.png"
+    "welcome": os.path.join(BASE_DIR, "banners", "welcome.png"),
+    "unknown": os.path.join(BASE_DIR, "banners", "unknown.png"),
+    "trusted": os.path.join(BASE_DIR, "banners", "trusted.png"),
+    "scam": os.path.join(BASE_DIR, "banners", "scam.png")
 }
 
 logging.basicConfig(level=logging.INFO)
-
-if not BOT_TOKEN or BOT_TOKEN == "ВАШ_ТОКЕН_БОТА":
-    logging.warning("ВНИМАНИЕ: Укажите корректный BOT_TOKEN!")
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -262,8 +258,15 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 # --- /admin ---
 @dp.message(Command("admin"))
-async def cmd_admin(message: types.Message):
+async def cmd_admin(message: types.Message, state: FSMContext):
+    await state.clear()
     if message.from_user.id not in ADMIN_IDS:
+        await message.answer(
+            f"<b>ОТКАЗАНО В ДОСТУПЕ</b>\n\n"
+            f"У вас нет прав администратора.\n"
+            f"Ваш Telegram ID: <code>{message.from_user.id}</code>\n\n"
+            f"Укажите этот ID в переменной <code>ADMIN_IDS</code> в настройках Render или прямо в коде!"
+        )
         return
     text = (
         "<b>ПАНЕЛЬ УПРАВЛЕНИЯ АДМИНИСТРАТОРА</b>\n\n"
@@ -321,15 +324,25 @@ async def process_user_check(message: types.Message, query: str):
         )
         await send_banner_response(message, "unknown", text)
 
+# Разделенная обработка нажатия кнопки и команды /check
 @dp.message(F.text == "🔎 Проверить пользователя")
-@dp.message(Command("check"))
-async def start_check_user(message: types.Message, state: FSMContext):
+async def btn_check_user(message: types.Message, state: FSMContext):
+    await state.clear()
     if message.reply_to_message and message.reply_to_message.from_user:
         target = message.reply_to_message.from_user
         identifier = f"@{target.username}" if target.username else str(target.id)
         await process_user_check(message, identifier)
         return
 
+    await state.set_state(CheckState.input_entity)
+    await message.answer(
+        "<b>ПРОВЕРКА ПОЛЬЗОВАТЕЛЯ</b>\n\n"
+        "<blockquote>Введите <b>@username</b> или <b>ID пользователя</b> для поиска в базе данных.</blockquote>"
+    )
+
+@dp.message(Command("check"))
+async def cmd_check_user(message: types.Message, state: FSMContext):
+    await state.clear()
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
         await process_user_check(message, args[1])
@@ -349,7 +362,8 @@ async def process_check_input(message: types.Message, state: FSMContext):
 # --- Список гарантов ---
 @dp.message(F.text == "🛡 Список гарантов")
 @dp.message(Command("guarantors"))
-async def show_guarantors(message: types.Message):
+async def show_guarantors(message: types.Message, state: FSMContext):
+    await state.clear()
     guarantors = await get_guarantors()
     if not guarantors:
         await message.answer("<b>СПИСОК ГАРАНТОВ</b>\n\n<blockquote>На данный момент список проверенных гарантов пуст.</blockquote>")
@@ -369,9 +383,10 @@ async def show_guarantors(message: types.Message):
     text += "<blockquote>Совершайте сделки исключительно через официальные контакты гарантов.</blockquote>"
     await message.answer(text)
 
-# --- Доп. функция: Проверка реквизитов ---
+# --- Проверка реквизитов ---
 @dp.message(F.text == "🔗 Проверка реквизитов")
-async def check_requisites_info(message: types.Message):
+async def check_requisites_info(message: types.Message, state: FSMContext):
+    await state.clear()
     text = (
         "<b>АВТОМАТИЗИРОВАННЫЙ АНТИФИШИНГ</b>\n\n"
         "<blockquote>Отправьте в этот чат номер карты, крипто-кошелек или ссылку для мгновенной сверки с черным списком.</blockquote>\n\n"
@@ -385,6 +400,7 @@ async def check_requisites_info(message: types.Message):
 # --- Подача жалобы ---
 @dp.message(F.text == "📩 Подать жалобу")
 async def start_complaint(message: types.Message, state: FSMContext):
+    await state.clear()
     await state.set_state(ComplaintState.target)
     await message.answer(
         "<b>ПОДАЧА ЖАЛОБЫ — ШАГ 1/3</b>\n\n"
