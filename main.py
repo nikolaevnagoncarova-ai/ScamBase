@@ -2,6 +2,7 @@ import asyncio
 import os
 import html
 import logging
+import re
 from typing import Optional, Dict, List, Tuple
 
 import aiosqlite
@@ -41,7 +42,10 @@ BANNERS = {
     "scam":    "https://i.postimg.cc/HLJ4MmDV/Bez-nazvania130-20260924141235.png"
 }
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -51,9 +55,14 @@ dp = Dispatcher(storage=MemoryStorage())
 # 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И КОМАНДЫ
 # ==========================================
 def normalize_id(ident: str) -> str:
+    """Нормализация идентификаторов (юзернеймы, ID, карты, кошельки)"""
     ident = ident.strip()
     if ident.startswith("@"):
         return ident.lower()
+    # Удаляем пробелы и дефисы для номеров карт/кошельков
+    clean_num = re.sub(r'[\s\-]+', '', ident)
+    if clean_num.isdigit():
+        return clean_num
     return ident
 
 def format_profile_link(identifier: str, label: Optional[str] = None) -> str:
@@ -386,11 +395,7 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 # --- Единая функция проверки объектов (пользователей, карт, кошельков, ссылок) ---
 async def process_user_check(message: types.Message, query: str):
     clean_query = html.escape(query.strip())
-    
-    # Авто-очистка пробелов для номеров банковских карт
-    search_query = query.strip()
-    if search_query.replace(" ", "").isdigit():
-        search_query = search_query.replace(" ", "")
+    search_query = normalize_id(query)
 
     status, data = await check_entity(search_query)
     
@@ -594,7 +599,7 @@ async def complaint_proof(message: types.Message, state: FSMContext):
         "<blockquote>Ваша жалоба отправлена на рассмотрение модераторам FraudX Base. В случае подтверждения факта скама объект будет внесён в черную базу.</blockquote>"
     )
 
-# --- Авто-обработка любых текстовых сообщений в ЛС (быстрый поиск без нажатия кнопок) ---
+# --- Авто-обработка любых текстовых сообщений в ЛС ---
 @dp.message(F.chat.type == "private", F.text)
 async def default_private_text_check(message: types.Message, state: FSMContext):
     if message.from_user:
@@ -800,10 +805,11 @@ async def admin_broadcast_process(message: types.Message, state: FSMContext):
                 message_id=message.message_id
             )
             success += 1
-            await asyncio.sleep(0.04)  # Защита от лимитов Telegram
+            await asyncio.sleep(0.04)  # Защита от лимитов Telegram (до 25-30 соб/сек)
         except (TelegramForbiddenError, TelegramBadRequest):
             blocked += 1
-        except Exception:
+        except Exception as e:
+            logging.error(f"Ошибка при рассылке пользователю {u_id}: {e}")
             errors += 1
 
     await status_msg.edit_text(
