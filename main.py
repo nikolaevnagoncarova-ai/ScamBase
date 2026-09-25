@@ -695,58 +695,49 @@ async def admin_add_g_deposit(message: types.Message, state: FSMContext):
     await state.clear()
     clean_name = html.escape(data['name'])
     await message.answer(f"<b>FraudX Base | ГАРАНТ УСПЕШНО ДОБАВЛЕН В РЕЕСТР</b>\n\nИмя: <b>{clean_name}</b>")
-
-# --- Рассмотрение жалоб ---
+# --- Рассмотрение жалоб (ИСПРАВЛЕННЫЙ ВАРИАНТ) ---
 @dp.callback_query(F.data == "admin_view_complaints")
 async def admin_view_complaints(call: types.CallbackQuery):
     if not await is_admin(call.from_user.id):
-        return
-    complaints = await get_pending_complaints()
-    if not complaints:
-        await call.message.answer("<b>FraudX Base | НОВЫХ ЖАЛОБ НЕТ</b>")
-        await call.answer()
+        await call.answer("У вас нет прав администратора", show_alert=True)
         return
 
-    c = complaints[0]
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="❌ Забанить (Скамер)", callback_data=f"complaint_ban_{c['id']}"),
-                InlineKeyboardButton(text="🗑 Отклонить", callback_data=f"complaint_reject_{c['id']}")
+    # 1. Отвечаем на Callback сразу, чтобы в Telegram моментально пропала плашка «Загрузка...»
+    await call.answer()
+
+    try:
+        complaints = await get_pending_complaints()
+        if not complaints:
+            await call.message.answer("<b>FraudX Base | НОВЫХ ЖАЛОБ НЕТ</b>")
+            return
+
+        c = complaints[0]
+
+        # 2. Безопасное обработка значений (защита от None / NULL из базы данных)
+        target_text = html.escape(str(c.get('target') or 'Не указан'))
+        desc_text = html.escape(str(c.get('description') or 'Без описания'))
+        proof_text = html.escape(str(c.get('proof') or 'Не указаны'))
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="❌ Забанить (Скамер)", callback_data=f"complaint_ban_{c['id']}"),
+                    InlineKeyboardButton(text="🗑 Отклонить", callback_data=f"complaint_reject_{c['id']}")
+                ]
             ]
-        ]
-    )
-    text = (
-        f"<b>FraudX Base | ЖАЛОБА #{c['id']}</b>\n\n"
-        f"• <b>Отправитель:</b> <code>{c['reporter_id']}</code>\n"
-        f"• <b>Нарушитель:</b> <code>{html.escape(c['target'])}</code>\n"
-        f"• <b>Описание:</b> <b>{html.escape(c['description'])}</b>\n"
-        f"• <b>Доказательства:</b> {html.escape(c['proof'])}"
-    )
-    await call.message.answer(text, reply_markup=keyboard)
-    await call.answer()
+        )
+        text = (
+            f"<b>FraudX Base | ЖАЛОБА #{c['id']}</b>\n\n"
+            f"• <b>Отправитель:</b> <code>{c['reporter_id']}</code>\n"
+            f"• <b>Нарушитель:</b> <code>{target_text}</code>\n"
+            f"• <b>Описание:</b> <b>{desc_text}</b>\n"
+            f"• <b>Доказательства:</b> {proof_text}"
+        )
+        await call.message.answer(text, reply_markup=keyboard)
 
-@dp.callback_query(F.data.startswith("complaint_ban_"))
-async def process_complaint_ban(call: types.CallbackQuery):
-    if not await is_admin(call.from_user.id):
-        return
-    c_id = int(call.data.split("_")[2])
-    c = await get_complaint_by_id(c_id)
-    if c:
-        await add_scammer(c['target'], f"Жалоба #{c_id}: {c['description']}", c['proof'])
-        await resolve_complaint(c_id, "approved")
-        await call.message.edit_text(f"<b>FraudX Base | ЖАЛОБА #{c_id} ОДОБРЕНА. ОБЪЕКТ ЗАНЕСЕН В ЧС.</b>")
-    await call.answer()
-
-@dp.callback_query(F.data.startswith("complaint_reject_"))
-async def process_complaint_reject(call: types.CallbackQuery):
-    if not await is_admin(call.from_user.id):
-        return
-    c_id = int(call.data.split("_")[2])
-    await resolve_complaint(c_id, "rejected")
-    await call.message.edit_text(f"<b>FraudX Base | ЖАЛОБА #{c_id} ОТКЛОНЕНА.</b>")
-    await call.answer()
-
+    except Exception as e:
+        logging.error(f"Ошибка при получении жалоб: {e}")
+        await call.message.answer(f"<b>⚠️ Ошибка при обработке жалобы:</b> <code>{html.escape(str(e))}</code>")
 # --- ФУНКЦИЯ РАССЫЛКИ ---
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(call: types.CallbackQuery, state: FSMContext):
