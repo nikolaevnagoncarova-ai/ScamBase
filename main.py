@@ -21,6 +21,7 @@ from aiogram.types import (
     LinkPreviewOptions, URLInputFile
 )
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiohttp import web
 
 # ==========================================
 # 1. КОНФИГУРАЦИЯ И НАСТРОЙКИ
@@ -912,12 +913,35 @@ async def auto_chat_shield(message: types.Message):
         await message.reply(warn_text)
 
 # ==========================================
-# 7. ТОЧКА ВХОДА
+# 7. ТОЧКА ВХОДА И ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ==========================================
+async def handle_ping(request):
+    """Простой обработчик для веб-сервера (чтобы Render видел открытый порт)"""
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
+    """Запуск фонового веб-сервера aiohttp"""
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render автоматически передает порт через переменную окружения PORT, по умолчанию 10000
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    
+    await site.start()
+    logging.info(f"Web server started on port {port} to satisfy Render requirements.")
+
 async def main():
     await init_db()
     await set_bot_commands(bot)
     logging.info("База данных FraudX Base и меню команд успешно инициализированы.")
+    
+    # Запускаем веб-сервер в фоне параллельно с ботом
+    asyncio.create_task(start_web_server())
+    
+    # Запуск поллинга самого бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
