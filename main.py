@@ -558,7 +558,7 @@ async def complaint_desc(message: types.Message, state: FSMContext):
     await state.set_state(ComplaintState.proof)
     await message.answer(
         "<b>FraudX Base | ПОДАЧА ЖАЛОБЫ — ШАГ 3/3</b>\n\n"
-        "<b>Предоставьте ссылки на доказательства (Telegraph, Imgur, скриншоты или переписку).</b>"
+        "<b>Предоставьте ссылки на доказательства (Telegraph, Imgur) или отправьте скриншот/файл.</b>"
     )
 
 @dp.message(ComplaintState.proof)
@@ -566,11 +566,20 @@ async def complaint_proof(message: types.Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     
+    proof_value = "Не указаны"
+    
+    if message.photo:
+        proof_value = f"photo:{message.photo[-1].file_id}"
+    elif message.document:
+        proof_value = f"doc:{message.document.file_id}"
+    elif message.text:
+        proof_value = message.text
+
     complaint_id = await add_complaint(
         reporter_id=message.from_user.id,
         target=data['target'],
         description=data['description'],
-        proof=message.text
+        proof=proof_value
     )
     
     await message.answer(
@@ -695,14 +704,14 @@ async def admin_add_g_deposit(message: types.Message, state: FSMContext):
     await state.clear()
     clean_name = html.escape(data['name'])
     await message.answer(f"<b>FraudX Base | ГАРАНТ УСПЕШНО ДОБАВЛЕН В РЕЕСТР</b>\n\nИмя: <b>{clean_name}</b>")
-# --- Рассмотрение жалоб (ИСПРАВЛЕННЫЙ ВАРИАНТ) ---
+
+# --- Рассмотрение жалоб ---
 @dp.callback_query(F.data == "admin_view_complaints")
 async def admin_view_complaints(call: types.CallbackQuery):
     if not await is_admin(call.from_user.id):
-        await call.answer("У вас нет прав администратора", show_alert=True)
+        await call.answer("У вас нет прав!", show_alert=True)
         return
 
-    # 1. Отвечаем на Callback сразу, чтобы в Telegram моментально пропала плашка «Загрузка...»
     await call.answer()
 
     try:
@@ -712,11 +721,10 @@ async def admin_view_complaints(call: types.CallbackQuery):
             return
 
         c = complaints[0]
-
-        # 2. Безопасное обработка значений (защита от None / NULL из базы данных)
+        
         target_text = html.escape(str(c.get('target') or 'Не указан'))
         desc_text = html.escape(str(c.get('description') or 'Без описания'))
-        proof_text = html.escape(str(c.get('proof') or 'Не указаны'))
+        raw_proof = str(c.get('proof') or '')
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -726,18 +734,87 @@ async def admin_view_complaints(call: types.CallbackQuery):
                 ]
             ]
         )
-        text = (
+
+        caption_text = (
             f"<b>FraudX Base | ЖАЛОБА #{c['id']}</b>\n\n"
             f"• <b>Отправитель:</b> <code>{c['reporter_id']}</code>\n"
             f"• <b>Нарушитель:</b> <code>{target_text}</code>\n"
             f"• <b>Описание:</b> <b>{desc_text}</b>\n"
-            f"• <b>Доказательства:</b> {proof_text}"
         )
-        await call.message.answer(text, reply_markup=keyboard)
+
+        if raw_proof.startswith("photo:"):
+            photo_file_id = raw_proof.replace("photo:", "")
+            caption_text += "• <b>Доказательства:</b> <i>Прикреплено фото 🖼</i>"
+            await call.message.answer_photo(photo=photo_file_id, caption=caption_text, reply_markup=keyboard)
+        elif raw_proof.startswith("doc:"):
+            doc_file_id = raw_proof.replace("doc:", "")
+            caption_text += "• <b>Доказательства:</b> <i>Прикреплен документ 📁</i>"
+            await call.message.answer_document(document=doc_file_id, caption=caption_text, reply_markup=keyboard)
+        else:
+            proof_text = html.escape(raw_proof if raw_proof else "Не указаны")
+            caption_text += f"• <b>Доказательства:</b> {proof_text}"
+            await call.message.answer(caption_text, reply_markup=keyboard)
 
     except Exception as e:
-        logging.error(f"Ошибка при получении жалоб: {e}")
-        await call.message.answer(f"<b>⚠️ Ошибка при обработке жалобы:</b> <code>{html.escape(str(e))}</code>")
+        logging.error(f"Ошибка при просмотре жалоб: {e}")
+        await call.message.answer(f"⚠️ <b>Ошибка при загрузке жалобы:</b> <code>{html.escape(str(e))}</code>")
+
+@dp.callback_query(F.data.startswith("complaint_ban_"))
+async def process_complaint_ban(call: types.CallbackQuery):
+    if not await is_admin(call.from_user.id):
+        await call.answer("У вас нет прав!", show_alert=True)
+        return
+
+    await call.answer()
+
+    try:
+        c_id = int(call.data.split("_")[2])
+        c = await get_complaint_by_id(c_id)
+        
+        if c:
+            proof = c.get('proof') or "Не указаны"
+            target = c.get('target') or "Неизвестно"
+            desc = c.get('description') or "Без описания"
+
+            await add_scammer(target, f"Жалоба #{c_id}: {desc}", proof)
+            await resolve_complaint(c_id, "approved")
+
+            result_text = f"<b>FraudX Base | ЖАЛОБА #{c_id} ОДОБРЕНА</b>\n\nОбъект <code>{html.escape(str(target))}</code> занесён в ЧС!"
+            
+            if call.message.caption:
+                await call.message.edit_caption(caption=result_text)
+            else:
+                await call.message.edit_text(text=result_text)
+        else:
+            await call.message.answer("⚠️ Жалоба не найдена или уже обработана.")
+
+    except Exception as e:
+        logging.error(f"Ошибка при блокировке: {e}")
+        await call.message.answer(f"⚠️ <b>Ошибка при обработке:</b> <code>{html.escape(str(e))}</code>")
+
+@dp.callback_query(F.data.startswith("complaint_reject_"))
+async def process_complaint_reject(call: types.CallbackQuery):
+    if not await is_admin(call.from_user.id):
+        await call.answer("У вас нет прав!", show_alert=True)
+        return
+
+    await call.answer()
+
+    try:
+        c_id = int(call.data.split("_")[2])
+        await resolve_complaint(c_id, "rejected")
+
+        result_text = f"<b>FraudX Base | ЖАЛОБА #{c_id} ОТКЛОНЕНА</b>"
+
+        if call.message.caption:
+            await call.message.edit_caption(caption=result_text)
+        else:
+            await call.message.edit_text(text=result_text)
+
+    except Exception as e:
+        logging.error(f"Ошибка при отклонении: {e}")
+        await call.message.answer(f"⚠️ <b>Ошибка при обработке:</b> <code>{html.escape(str(e))}</code>")
+
 # --- ФУНКЦИЯ РАССЫЛКИ ---
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(call: types.CallbackQuery, state: FSMContext):
@@ -917,7 +994,6 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # Render автоматически передает порт через переменную окружения PORT, по умолчанию 10000
     port = int(os.getenv("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     
@@ -929,10 +1005,8 @@ async def main():
     await set_bot_commands(bot)
     logging.info("База данных FraudX Base и меню команд успешно инициализированы.")
     
-    # Запускаем веб-сервер в фоне параллельно с ботом
     asyncio.create_task(start_web_server())
     
-    # Запуск поллинга самого бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
