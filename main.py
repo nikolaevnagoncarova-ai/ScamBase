@@ -35,7 +35,7 @@ TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", os.getenv("DB_PATH", "file:
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", None)
 
 def get_turso_client():
-    return libsql_client.create_client_async(
+    return libsql_client.create_client(
         url=TURSO_DATABASE_URL,
         auth_token=TURSO_AUTH_TOKEN if TURSO_AUTH_TOKEN else None
     )
@@ -323,7 +323,6 @@ def admin_manage_keyboard():
         ]
     )
 
-# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ БАННЕРОВ С ИСПОЛЬЗОВАНИЕМ URLInputFile ---
 async def send_banner_response(message: types.Message, banner_key: str, caption_text: str, reply_markup=None):
     photo_url = BANNERS.get(banner_key)
     link_options = LinkPreviewOptions(is_disabled=False, prefer_large_media=True, show_above_text=True)
@@ -343,7 +342,6 @@ async def send_banner_response(message: types.Message, banner_key: str, caption_
 # 5. ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ
 # ==========================================
 
-# --- /start ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -362,7 +360,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
     await send_banner_response(message, "welcome", text, reply_markup=main_keyboard())
 
-# --- /admin ---
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message, state: FSMContext):
     await state.clear()
@@ -383,7 +380,6 @@ async def cmd_admin(message: types.Message, state: FSMContext):
     )
     await message.answer(text, reply_markup=admin_keyboard())
 
-# --- Единая функция проверки объектов ---
 async def process_user_check(message: types.Message, query: str):
     clean_query = html.escape(query.strip())
     search_query = normalize_id(query)
@@ -444,7 +440,6 @@ async def process_user_check(message: types.Message, query: str):
         )
         await send_banner_response(message, "unknown", text)
 
-# --- Проверка пользователя ---
 @dp.message(F.text == "🔎 Проверить пользователя")
 async def btn_check_user(message: types.Message, state: FSMContext):
     await state.clear()
@@ -485,7 +480,6 @@ async def process_check_input(message: types.Message, state: FSMContext):
     await state.clear()
     await process_user_check(message, message.text)
 
-# --- Список гарантов ---
 @dp.message(F.text == "🛡 Список гарантов")
 @dp.message(Command("guarantors"))
 async def show_guarantors(message: types.Message, state: FSMContext):
@@ -519,7 +513,6 @@ async def show_guarantors(message: types.Message, state: FSMContext):
     link_options = LinkPreviewOptions(is_disabled=False, prefer_large_media=True, show_above_text=True)
     await message.answer(text, link_preview_options=link_options)
 
-# --- Подача жалобы ---
 @dp.message(F.text == "📩 Подать жалобу")
 async def start_complaint(message: types.Message, state: FSMContext):
     await state.clear()
@@ -577,7 +570,6 @@ async def complaint_proof(message: types.Message, state: FSMContext):
         "<b>Ваша жалоба отправлена на рассмотрение модераторам FraudX Base. В случае подтверждения факта скама объект будет внесён в черную базу.</b>"
     )
 
-# --- Авто-обработка любых текстовых сообщений в ЛС (С ЗАЩИТОЙ FSM) ---
 @dp.message(F.chat.type == "private", F.text, StateFilter(default_state))
 async def default_private_text_check(message: types.Message, state: FSMContext):
     if message.from_user:
@@ -598,7 +590,6 @@ async def default_private_text_check(message: types.Message, state: FSMContext):
 # 6. ЛОГИКА АДМИНИСТРАТОРА
 # ==========================================
 
-# --- Добавление скамера ---
 @dp.callback_query(F.data == "admin_add_scam")
 async def admin_add_scam_start(call: types.CallbackQuery, state: FSMContext):
     if not await is_admin(call.from_user.id):
@@ -633,7 +624,6 @@ async def admin_add_scam_proof(message: types.Message, state: FSMContext):
     clean_target = html.escape(data['target'])
     await message.answer(f"<b>FraudX Base | ОБЪЕКТ ЗАНЕСЕН В ЧЕРНЫЙ СПИСОК</b>\n\nИдентификатор: <code>{clean_target}</code>")
 
-# --- Добавление проверенного ---
 @dp.callback_query(F.data == "admin_add_trust")
 async def admin_add_trust_start(call: types.CallbackQuery, state: FSMContext):
     if not await is_admin(call.from_user.id):
@@ -651,7 +641,6 @@ async def admin_add_trust_target(message: types.Message, state: FSMContext):
     clean_target = html.escape(message.text)
     await message.answer(f"<b>FraudX Base | ПОЛЬЗОВАТЕЛЬ ВЕРИФИЦИРОВАН</b>\n\nИдентификатор: <code>{clean_target}</code>")
 
-# --- Добавление гаранта ---
 @dp.callback_query(F.data == "admin_add_guarantor")
 async def admin_add_guarantor_start(call: types.CallbackQuery, state: FSMContext):
     if not await is_admin(call.from_user.id):
@@ -694,7 +683,6 @@ async def admin_add_g_deposit(message: types.Message, state: FSMContext):
     clean_name = html.escape(data['name'])
     await message.answer(f"<b>FraudX Base | ГАРАНТ УСПЕШНО ДОБАВЛЕН В РЕЕСТР</b>\n\nИмя: <b>{clean_name}</b>")
 
-# --- Рассмотрение жалоб ---
 @dp.callback_query(F.data == "admin_view_complaints")
 async def admin_view_complaints(call: types.CallbackQuery):
     if not await is_admin(call.from_user.id):
@@ -804,7 +792,6 @@ async def process_complaint_reject(call: types.CallbackQuery):
         logging.error(f"Ошибка при отклонении: {e}")
         await call.message.answer(f"⚠️ <b>Ошибка при обработке:</b> <code>{html.escape(str(e))}</code>")
 
-# --- ФУНКЦИЯ РАССЫЛКИ ---
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(call: types.CallbackQuery, state: FSMContext):
     if not await is_admin(call.from_user.id):
@@ -856,7 +843,6 @@ async def admin_broadcast_process(message: types.Message, state: FSMContext):
         f"📊 <b>Всего в базе:</b> {len(users)}"
     )
 
-# --- УПРАВЛЕНИЕ АДМИНИСТРАТОРАМИ ---
 @dp.callback_query(F.data == "admin_manage_admins")
 async def admin_manage_menu(call: types.CallbackQuery):
     if not await is_admin(call.from_user.id):
@@ -934,8 +920,6 @@ async def admin_list_admins(call: types.CallbackQuery):
     await call.message.answer(text)
     await call.answer()
 
-
-# --- Авто-проверка сообщений в группах ---
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def auto_chat_shield(message: types.Message):
     if not message.from_user:
@@ -969,15 +953,14 @@ async def auto_chat_shield(message: types.Message):
                 
         await message.reply(warn_text)
 
+
 # ==========================================
 # 7. ТОЧКА ВХОДА И ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ==========================================
 async def handle_ping(request):
-    """Простой обработчик для веб-сервера (чтобы Render видел открытый порт)"""
     return web.Response(text="Bot is running!")
 
 async def start_web_server():
-    """Запуск фонового веб-сервера aiohttp"""
     app = web.Application()
     app.router.add_get('/', handle_ping)
     runner = web.AppRunner(app)
