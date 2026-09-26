@@ -1007,7 +1007,7 @@ async def main():
     
     asyncio.create_task(start_web_server())
     
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
