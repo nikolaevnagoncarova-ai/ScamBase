@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Optional, Dict, List, Tuple
 
-import aiosqlite
+import libsql_client
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F, types
@@ -30,11 +30,23 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
 
+# Настройки базы данных Turso
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", os.getenv("DB_PATH", "file:antiscam.db"))
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", None)
+
+def get_turso_client():
+    return libsql_client.create_client_async(
+        url=TURSO_DATABASE_URL,
+        auth_token=TURSO_AUTH_TOKEN if TURSO_AUTH_TOKEN else None
+    )
+
+def row_to_dict(rs, row) -> dict:
+    """Вспомогательная функция конвертации строки Turso в словарь"""
+    return {col: val for col, val in zip(rs.columns, row)}
+
 # Список ID главных администраторов из переменных окружения
 raw_admins = os.getenv("ADMIN_IDS", "")
 ENV_ADMIN_IDS = [int(admin_id.strip()) for admin_id in raw_admins.split(",") if admin_id.strip().isdigit()]
-
-DB_PATH = os.getenv("DB_PATH", "antiscam.db")
 
 # Прямые ссылки на баннеры из Postimages
 BANNERS = {
@@ -92,24 +104,24 @@ async def set_bot_commands(bot_instance: Bot):
 
 
 # ==========================================
-# 3. РАБОТА С БАЗОЙ ДАННЫХ (SQLITE)
+# 3. РАБОТА С БАЗОЙ ДАННЫХ (TURSO / LIBSQL)
 # ==========================================
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
+    async with get_turso_client() as client:
+        await client.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.execute("""
+        await client.execute("""
             CREATE TABLE IF NOT EXISTS db_admins (
                 user_id INTEGER PRIMARY KEY,
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.execute("""
+        await client.execute("""
             CREATE TABLE IF NOT EXISTS scammers (
                 identifier TEXT PRIMARY KEY,
                 reason TEXT NOT NULL,
@@ -117,14 +129,14 @@ async def init_db():
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.execute("""
+        await client.execute("""
             CREATE TABLE IF NOT EXISTS trusted_users (
                 identifier TEXT PRIMARY KEY,
                 note TEXT,
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.execute("""
+        await client.execute("""
             CREATE TABLE IF NOT EXISTS guarantors (
                 identifier TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -133,7 +145,7 @@ async def init_db():
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.execute("""
+        await client.execute("""
             CREATE TABLE IF NOT EXISTS complaints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 reporter_id INTEGER NOT NULL,
@@ -144,137 +156,114 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.commit()
 
 async def register_user(user: types.User):
     """Регистрация пользователя для рассылок"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+    async with get_turso_client() as client:
+        await client.execute(
             "INSERT OR REPLACE INTO users (user_id, username) VALUES (?, ?)",
-            (user.id, user.username)
+            [user.id, user.username]
         )
-        await db.commit()
 
 async def get_all_users() -> List[int]:
     """Получение списка всех ID пользователей для рассылки"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id FROM users") as cursor:
-            rows = await cursor.fetchall()
-            return [r[0] for r in rows]
+    async with get_turso_client() as client:
+        rs = await client.execute("SELECT user_id FROM users")
+        return [int(row[0]) for row in rs.rows]
 
 async def is_admin(user_id: int) -> bool:
     """Проверка прав администратора (из ENV и из БД)"""
     if user_id in ENV_ADMIN_IDS:
         return True
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT 1 FROM db_admins WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            return row is not None
+    async with get_turso_client() as client:
+        rs = await client.execute("SELECT 1 FROM db_admins WHERE user_id = ?", [user_id])
+        return len(rs.rows) > 0
 
 async def add_admin_db(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO db_admins (user_id) VALUES (?)", (user_id,))
-        await db.commit()
+    async with get_turso_client() as client:
+        await client.execute("INSERT OR IGNORE INTO db_admins (user_id) VALUES (?)", [user_id])
 
 async def remove_admin_db(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM db_admins WHERE user_id = ?", (user_id,))
-        await db.commit()
+    async with get_turso_client() as client:
+        await client.execute("DELETE FROM db_admins WHERE user_id = ?", [user_id])
 
 async def get_db_admins() -> List[int]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id FROM db_admins") as cursor:
-            rows = await cursor.fetchall()
-            return [r[0] for r in rows]
+    async with get_turso_client() as client:
+        rs = await client.execute("SELECT user_id FROM db_admins")
+        return [int(row[0]) for row in rs.rows]
 
 async def check_entity(ident: str) -> Tuple[str, Optional[Dict]]:
     ident = normalize_id(ident)
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        
-        async with db.execute("SELECT * FROM scammers WHERE identifier = ?", (ident,)) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return "scammer", dict(row)
-                
-        async with db.execute("SELECT * FROM guarantors WHERE identifier = ?", (ident,)) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return "guarantor", dict(row)
+    async with get_turso_client() as client:
+        rs = await client.execute("SELECT * FROM scammers WHERE identifier = ?", [ident])
+        if rs.rows:
+            return "scammer", row_to_dict(rs, rs.rows[0])
+            
+        rs = await client.execute("SELECT * FROM guarantors WHERE identifier = ?", [ident])
+        if rs.rows:
+            return "guarantor", row_to_dict(rs, rs.rows[0])
 
-        async with db.execute("SELECT * FROM trusted_users WHERE identifier = ?", (ident,)) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return "trusted", dict(row)
+        rs = await client.execute("SELECT * FROM trusted_users WHERE identifier = ?", [ident])
+        if rs.rows:
+            return "trusted", row_to_dict(rs, rs.rows[0])
 
         return "unknown", None
 
 async def add_scammer(identifier: str, reason: str, proof: str = "Не указаны"):
     ident = normalize_id(identifier)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+    async with get_turso_client() as client:
+        await client.execute(
             "INSERT OR REPLACE INTO scammers (identifier, reason, proof) VALUES (?, ?, ?)",
-            (ident, reason, proof)
+            [ident, reason, proof]
         )
-        await db.execute("DELETE FROM trusted_users WHERE identifier = ?", (ident,))
-        await db.execute("DELETE FROM guarantors WHERE identifier = ?", (ident,))
-        await db.commit()
+        await client.execute("DELETE FROM trusted_users WHERE identifier = ?", [ident])
+        await client.execute("DELETE FROM guarantors WHERE identifier = ?", [ident])
 
 async def add_trusted_user(identifier: str, note: str = "Проверен"):
     ident = normalize_id(identifier)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+    async with get_turso_client() as client:
+        await client.execute(
             "INSERT OR REPLACE INTO trusted_users (identifier, note) VALUES (?, ?)",
-            (ident, note)
+            [ident, note]
         )
-        await db.execute("DELETE FROM scammers WHERE identifier = ?", (ident,))
-        await db.commit()
+        await client.execute("DELETE FROM scammers WHERE identifier = ?", [ident])
 
 async def add_guarantor(identifier: str, name: str, description: str, deposit: str = "Отсутствует"):
     ident = normalize_id(identifier)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+    async with get_turso_client() as client:
+        await client.execute(
             "INSERT OR REPLACE INTO guarantors (identifier, name, description, deposit) VALUES (?, ?, ?, ?)",
-            (ident, name, description, deposit)
+            [ident, name, description, deposit]
         )
-        await db.execute("DELETE FROM scammers WHERE identifier = ?", (ident,))
-        await db.commit()
+        await client.execute("DELETE FROM scammers WHERE identifier = ?", [ident])
 
 async def get_guarantors() -> List[Dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM guarantors ORDER BY added_at DESC") as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+    async with get_turso_client() as client:
+        rs = await client.execute("SELECT * FROM guarantors ORDER BY added_at DESC")
+        return [row_to_dict(rs, row) for row in rs.rows]
 
 async def add_complaint(reporter_id: int, target: str, description: str, proof: str) -> int:
     target = normalize_id(target)
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
+    async with get_turso_client() as client:
+        rs = await client.execute(
             "INSERT INTO complaints (reporter_id, target, description, proof) VALUES (?, ?, ?, ?)",
-            (reporter_id, target, description, proof)
+            [reporter_id, target, description, proof]
         )
-        await db.commit()
-        return cursor.lastrowid
+        return rs.last_insert_rowid
 
 async def get_pending_complaints() -> List[Dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM complaints WHERE status = 'pending' ORDER BY id ASC") as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+    async with get_turso_client() as client:
+        rs = await client.execute("SELECT * FROM complaints WHERE status = 'pending' ORDER BY id ASC")
+        return [row_to_dict(rs, row) for row in rs.rows]
 
 async def get_complaint_by_id(complaint_id: int) -> Optional[Dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM complaints WHERE id = ?", (complaint_id,)) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+    async with get_turso_client() as client:
+        rs = await client.execute("SELECT * FROM complaints WHERE id = ?", [complaint_id])
+        return row_to_dict(rs, rs.rows[0]) if rs.rows else None
 
 async def resolve_complaint(complaint_id: int, status: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE complaints SET status = ? WHERE id = ?", (status, complaint_id))
-        await db.commit()
+    async with get_turso_client() as client:
+        await client.execute("UPDATE complaints SET status = ? WHERE id = ?", [status, complaint_id])
 
 
 # ==========================================
@@ -1003,7 +992,7 @@ async def start_web_server():
 async def main():
     await init_db()
     await set_bot_commands(bot)
-    logging.info("База данных FraudX Base и меню команд успешно инициализированы.")
+    logging.info("База данных FraudX Base (Turso) и меню команд успешно инициализированы.")
     
     asyncio.create_task(start_web_server())
     
